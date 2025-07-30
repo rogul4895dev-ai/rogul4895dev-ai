@@ -1,0 +1,356 @@
+Alright! You want a home guard robot using Arduino with these features:
+
+Ultrasonic sensor for obstacle detection
+
+Heat sensor (temperature sensor)
+
+Gas sensor (like MQ-2)
+
+Servo motor (for e.g., to rotate ultrasonic sensor or control a camera)
+
+HC-05 Bluetooth module for communication with phone
+
+LCD to display temperature and alerts
+
+Beep sound when gas detected
+
+Operate in two modes:
+
+Automatic mode: robot runs on its own, detects obstacles, gas, temperature, and sends alerts
+
+Bluetooth voice command mode: control robot via phone voice commands
+
+
+
+
+---
+
+Hardware Required:
+
+Arduino Uno (or similar)
+
+Ultrasonic sensor (HC-SR04)
+
+MQ-2 Gas sensor
+
+Temperature sensor (e.g., LM35 or DHT11)
+
+Servo motor (SG90 or similar)
+
+HC-05 Bluetooth module
+
+16x2 LCD (with I2C adapter preferred for easy wiring)
+
+Buzzer
+
+Motor driver and motors (assuming differential drive wheels)
+
+Power supply
+
+
+
+---
+
+How it will work:
+
+Ultrasonic sensor scans obstacles
+
+Gas sensor detects gas concentration
+
+Temperature sensor reads heat
+
+If gas detected -> buzzer beep + alert sent over Bluetooth
+
+LCD shows temperature and alert messages
+
+Servo motor rotates ultrasonic sensor or something useful
+
+Bluetooth receives voice commands from phone app (like "forward", "left", "stop", "auto", etc.)
+
+In automatic mode, robot moves and avoids obstacles automatically
+
+Alerts and sensor readings continuously sent via Bluetooth
+
+
+
+---
+
+Important:
+
+For Bluetooth voice command, you need a phone app (e.g., Bluetooth Terminal or a custom app) that sends simple text commands via Bluetooth after converting voice to text.
+
+
+
+---
+
+Here's the full Arduino code example combining these:
+
+#include <Servo.h>
+#include <LiquidCrystal_I2C.h>
+#include <SoftwareSerial.h>
+
+// Pins
+#define trigPin 9
+#define echoPin 10
+#define gasPin A0
+#define tempPin A1
+#define buzzerPin 6
+#define motorLeftForward 3
+#define motorLeftBackward 4
+#define motorRightForward 5
+#define motorRightBackward 2
+
+// Bluetooth pins (HC-05)
+#define BT_RX 7
+#define BT_TX 8
+
+Servo servoMotor;
+LiquidCrystal_I2C lcd(0x27,16,2);
+SoftwareSerial BTSerial(BT_RX, BT_TX); // RX, TX
+
+// Variables
+long duration;
+int distance;
+int gasValue;
+float temperature;
+String btCommand = "";
+
+bool autoMode = true; // Start in automatic mode
+
+void setup() {
+  // Motor pins
+  pinMode(motorLeftForward, OUTPUT);
+  pinMode(motorLeftBackward, OUTPUT);
+  pinMode(motorRightForward, OUTPUT);
+  pinMode(motorRightBackward, OUTPUT);
+
+  // Sensors
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+  pinMode(gasPin, INPUT);
+  pinMode(tempPin, INPUT);
+  pinMode(buzzerPin, OUTPUT);
+
+  // Serial
+  Serial.begin(9600);
+  BTSerial.begin(9600);
+
+  // Servo
+  servoMotor.attach(11);
+  servoMotor.write(90); // Center position
+
+  // LCD
+  lcd.init();
+  lcd.backlight();
+
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Home Guard Robot");
+  delay(2000);
+  lcd.clear();
+}
+
+void loop() {
+  // Read Bluetooth commands
+  if (BTSerial.available()) {
+    char c = BTSerial.read();
+    if (c == '\n' || c == '\r') {
+      processCommand(btCommand);
+      btCommand = "";
+    } else {
+      btCommand += c;
+    }
+  }
+
+  if (autoMode) {
+    automaticMode();
+  } else {
+    // In manual mode, motor controlled by Bluetooth commands
+  }
+  
+  delay(100);
+}
+
+void automaticMode() {
+  // Measure distance
+  distance = readUltrasonicDistance();
+
+  // Read gas sensor
+  gasValue = analogRead(gasPin);
+
+  // Read temperature sensor (assuming LM35: 10mV per degree Celsius)
+  temperature = analogRead(tempPin) * (5.0 / 1023.0) * 100;
+
+  // Show temperature on LCD
+  lcd.setCursor(0,0);
+  lcd.print("Temp:");
+  lcd.print(temperature,1);
+  lcd.print((char)223); // degree symbol
+  lcd.print("C   ");
+
+  // Show gas alert if gas detected
+  if (gasValue > 300) {  // Adjust threshold as per your sensor
+    lcd.setCursor(0,1);
+    lcd.print("GAS ALERT!      ");
+    tone(buzzerPin, 1000);
+    BTSerial.println("Alert: Gas detected!");
+  } else {
+    lcd.setCursor(0,1);
+    lcd.print("Distance:");
+    lcd.print(distance);
+    lcd.print(" cm   ");
+    noTone(buzzerPin);
+  }
+
+  // Simple obstacle avoidance
+  if (distance < 20) { // obstacle close
+    stopMotors();
+    BTSerial.println("Alert: Obstacle detected!");
+    delay(500);
+
+    // Turn servo to scan
+    for (int pos = 45; pos <= 135; pos += 15) {
+      servoMotor.write(pos);
+      delay(200);
+      int scanDist = readUltrasonicDistance();
+      if (scanDist > 30) {
+        if (pos < 90) {
+          turnRight();
+        } else {
+          turnLeft();
+        }
+        delay(500);
+        return;
+      }
+    }
+    // If no clear path, go backward
+    moveBackward();
+    delay(500);
+  } else {
+    moveForward();
+  }
+}
+
+void processCommand(String cmd) {
+  cmd.trim();
+  cmd.toLowerCase();
+  Serial.println("BT CMD: " + cmd);
+
+  if (cmd == "auto") {
+    autoMode = true;
+    stopMotors();
+    BTSerial.println("Mode: Automatic");
+  } 
+  else if (cmd == "forward") {
+    autoMode = false;
+    moveForward();
+  } 
+  else if (cmd == "backward") {
+    autoMode = false;
+    moveBackward();
+  } 
+  else if (cmd == "left") {
+    autoMode = false;
+    turnLeft();
+  } 
+  else if (cmd == "right") {
+    autoMode = false;
+    turnRight();
+  } 
+  else if (cmd == "stop") {
+    autoMode = false;
+    stopMotors();
+  }
+  else {
+    BTSerial.println("Unknown Command");
+  }
+}
+
+long readUltrasonicDistance() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  duration = pulseIn(echoPin, HIGH);
+  long distanceCm = duration * 0.034 / 2;
+  return distanceCm;
+}
+
+// Motor functions
+void moveForward() {
+  digitalWrite(motorLeftForward, HIGH);
+  digitalWrite(motorLeftBackward, LOW);
+  digitalWrite(motorRightForward, HIGH);
+  digitalWrite(motorRightBackward, LOW);
+}
+
+void moveBackward() {
+  digitalWrite(motorLeftForward, LOW);
+  digitalWrite(motorLeftBackward, HIGH);
+  digitalWrite(motorRightForward, LOW);
+  digitalWrite(motorRightBackward, HIGH);
+}
+
+void turnLeft() {
+  digitalWrite(motorLeftForward, LOW);
+  digitalWrite(motorLeftBackward, HIGH);
+  digitalWrite(motorRightForward, HIGH);
+  digitalWrite(motorRightBackward, LOW);
+}
+
+void turnRight() {
+  digitalWrite(motorLeftForward, HIGH);
+  digitalWrite(motorLeftBackward, LOW);
+  digitalWrite(motorRightForward, LOW);
+  digitalWrite(motorRightBackward, HIGH);
+}
+
+void stopMotors() {
+  digitalWrite(motorLeftForward, LOW);
+  digitalWrite(motorLeftBackward, LOW);
+  digitalWrite(motorRightForward, LOW);
+  digitalWrite(motorRightBackward, LOW);
+}
+
+
+---
+
+How to use:
+
+Connect HC-05 Bluetooth module to Arduino pins 7 (RX) and 8 (TX) via SoftwareSerial
+
+Use a phone Bluetooth terminal app or voice-to-text app that sends commands:
+
+"auto" — automatic mode
+
+"forward", "backward", "left", "right", "stop" — manual control
+
+
+When gas detected, buzzer sounds and alert sent to Bluetooth
+
+Temperature and alerts shown on LCD
+
+Ultrasonic sensor avoids obstacles automatically
+
+
+
+---
+
+Notes:
+
+Adjust sensor thresholds (gasValue, distance) according to your environment
+
+You can improve voice control by building a custom Android app to send commands
+
+Add motor driver circuit to control motors safely
+
+Servo motor here is used to scan environment — you can repurpose it as needed
+
+
+
+---
+
+If you want, I can help you with wiring diagrams or app suggestions next! Would you like that?
+
